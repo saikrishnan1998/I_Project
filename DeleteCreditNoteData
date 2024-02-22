@@ -1,0 +1,81 @@
+USE `snerpdev`;
+DROP procedure IF EXISTS `deleteCreditNoteData`;
+
+USE `snerpdev`;
+DROP procedure IF EXISTS `snerpdev`.`deleteCreditNoteData`;
+;
+
+DELIMITER $$
+USE `snerpdev`$$
+CREATE DEFINER=`crmwrite`@`%` PROCEDURE `deleteCreditNoteData`(snPurchaseCreditNoteId INT)
+BEGIN
+
+
+	DECLARE invId INT;
+    DECLARE rcptId INT;
+    DECLARE custId INT;
+    DECLARE custLedgerId INT;
+    DECLARE lastLedgerId INT;
+    
+    -- fetching InvoiceID through SNPurchaseCreditNote id
+    
+   select invoice_id into invId from SNPurchaseCreditNote where id =snPurchaseCreditNoteId;
+    
+    -- Declaring ReceiptId & CustomerId
+    SELECT r.receiptId,r.customerId INTO rcptId,custId
+	FROM Receipt r
+	JOIN Invoice inv ON inv.invoiceNumber = r.instrumentNumber
+    WHERE inv.id = invId AND r.mode ='CreditNote' AND r.status ='Realised';
+    
+ 
+    
+    -- -- Declaring CustomerLedgerId
+    SELECT  id INTO custLedgerId FROM CustomerLedger WHERE receiptId = rcptId;
+    -- Delete records from SNPurchaseCreditNote
+    DELETE FROM SNPurchaseCreditNote WHERE invoice_id = invId;
+
+    -- Check if line items exist in InvoiceLineItemTaxInfo
+    IF (SELECT COUNT(*) FROM InvoiceLineItemTaxInfo WHERE lineItem_id IN (SELECT id FROM InvoiceLineItem WHERE invoice_id = invId)) > 0 THEN
+        -- Delete records from InvoiceLineItemTaxInfo
+        DELETE FROM InvoiceLineItemTaxInfo WHERE lineItem_id IN (SELECT id FROM InvoiceLineItem WHERE invoice_id = invId);
+    END IF;
+
+    -- Delete records from InvoiceLineItem
+    DELETE FROM InvoiceLineItem WHERE invoice_id = invId;
+
+    -- Delete records from Invoice
+    DELETE FROM Invoice WHERE id = invId;
+    
+    -- Removing  School  lastLedgerEntry_id
+    UPDATE School SET lastLedgerEntry_id =  NULL WHERE id =custId;
+
+    -- removing ParentCustomerLedger id 
+	UPDATE CustomerLedger set parentCustomerLedger = null where id  = custLedgerId;
+    -- Delete related records from tables using rcptId
+    DELETE FROM CustomerLedger WHERE id = custLedgerId ;
+    DELETE FROM AccountLedger WHERE receiptId = rcptId;
+    DELETE FROM POPayment WHERE receipt_Id = rcptId;
+    DELETE FROM Receipt_productAllocation WHERE Receipt_receiptId = rcptId;
+    DELETE FROM InvPayment WHERE receipt_id = rcptId;
+    DELETE FROM DistributorInvPayment WHERE receipt_id = rcptId;
+    DELETE FROM ReceiptLog WHERE receiptId = rcptId;
+    DELETE FROM Receipt WHERE receiptId = rcptId;
+
+    --  calling updateCustomerLedger and updateAccountLedger procedures
+    CALL updateCustomerLedger(custId);
+    CALL updateAccountLedger(custId);
+	CALL doPOPayments(custId);
+    
+    
+    -- fetching and declaring  lastledgerid of the customer
+    select Max(id) into lastLedgerId  from CustomerLedger where Customer_id = custId;
+    
+    -- updating lastledger id in customer
+    UPDATE School SET lastLedgerEntry_id = lastLedgerId WHERE id =custId;
+
+END$$
+
+DELIMITER ;
+;
+
+
