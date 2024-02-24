@@ -1,0 +1,50 @@
+CREATE DEFINER=`iconcept`@`localhost` PROCEDURE `creditnoteinsert`()
+BEGIN
+
+DROP TABLE IF EXISTS CreditNoteTemp;
+
+CREATE TABLE CreditNoteTemp
+SELECT T.customerId, T.id, T.discount, T.ReceiptAmt, Discount_Source, ROUND(ReceiptAmt, 2) Actual_Amt, 
+ROUND((discount/100)*ReceiptAmt, 2) Creditnote_Amt, T.receiptId receipt_id
+FROM (
+select applicableCD.customerId, cdi.id, cdi.discount, sum(dip.amount) ReceiptAmt, 'CDI' Discount_Source, applicableCD.receiptId
+from (
+select r.customerId, inv.id invoice_id, r.receiptId, min(cdi.id) cd_id
+from School dis
+join SNPurchaseOrder po on po.school_id = dis.id
+join Invoice inv on inv.po_id = po.id and inv.invoiceType = 'HardwareSale'
+join CashDiscountInfo cdi on cdi.state_id = dis.state_id and 
+(inv.invoiceDate between cdi.invoiceStartDate and cdi.invoiceEndDate)
+join DistributorInvPayment dip on dip.invoice_id = inv.id
+join Receipt r on dip.receipt_id = r.receiptId and r.clearedDate <= if(cdi.basedOn = 'Date', cdi.endDate, date_add(inv.invoiceDate, interval cdi.noOfDays day))
+where dis.schoolType = 6 and po.considerInCDComputation is true 
+and now() >= if(cdi.basedOn = 'Date', cdi.endDate, date_add(cdi.invoiceEndDate, interval cdi.noOfDays day))
+and r.mode not in ('CreditMemo', 'CreditNote', 'WriteOff') and r.status = 'Realised'
+group by r.receiptId, inv.id
+) applicableCD
+join DistributorInvPayment dip on dip.invoice_id = applicableCD.invoice_id and dip.receipt_id = applicableCD.receiptId
+join CashDiscountInfo cdi on cdi.id = applicableCD.cd_id
+group by applicableCD.receiptId, applicableCD.cd_id
+) T
+WHERE ((discount/100)*ReceiptAmt) >= 10;
+
+CREATE INDEX customerId_idx ON CreditNoteTemp(customerId);
+CREATE INDEX Id_idx ON CreditNoteTemp(id);
+CREATE INDEX receiptId_idx ON CreditNoteTemp(receipt_id);
+
+INSERT INTO CashDiscountTemp(customerId, receiptamt, discount, discount_source, id, Actual_Amt, creditnote_amt, receipt_id)
+SELECT stg.customerId, stg.receiptamt, stg.discount, stg.discount_source, stg.id, stg.Actual_Amt, stg.creditnote_amt, stg.receipt_id
+FROM CreditNoteTemp stg
+LEFT JOIN CashDiscountTemp cdt ON stg.customerId = cdt.customerId AND stg.id = cdt.id and (stg.receipt_id is null or stg.receipt_id = cdt.receipt_id)
+WHERE cdt.customerId IS NULL;
+
+INSERT INTO SNPurchaseCreditNote(amount, school_id, notetype, createdon, createdby_id, modifiedon, modifiedby_id, active, cdinfo_id, percentage, invoiceLocation_locationCode, receipt_id)
+SELECT t.creditnote_amt, t.customerId, 0 notetype, NOW(), 239 createdby_id, NOW(), 239 modifiedby_id, FALSE active, IF(t.discount_source = 'DCD', 
+dcd.cashDiscountInfo_id, t.id) cdinfo_id, t.discount, 'HYT' invoiceLocation_locationCode, t.receipt_id
+FROM CashDiscountTemp t
+left join DistributorCashDiscount dcd on dcd.id = t.id
+LEFT JOIN SNPurchaseCreditNote scn ON IF(t.discount_source = 'DCD', dcd.cashDiscountInfo_id, t.id) = scn.cdinfo_id AND t.customerId = scn.school_id
+and (t.receipt_id is null or t.receipt_id = scn.receipt_id)
+WHERE scn.school_id IS NULL;
+
+END

@@ -1,0 +1,17 @@
+CREATE 
+    ALGORITHM = UNDEFINED 
+    DEFINER = `iconcept`@`%` 
+    SQL SECURITY DEFINER
+VIEW `v_BillToShipToOrder` AS
+    SELECT 
+        `po`.`id` AS `po_id`,
+        IF((`b2s2`.`school_id` <> `s`.`id`),
+            'B',
+            'N') AS `b2s2`
+    FROM
+        ((`SNPurchaseOrder` `po`
+        JOIN `School` `s` ON ((`s`.`id` = `po`.`school_id`)))
+        JOIN `SchoolBillToShipTo` `b2s2` ON ((`b2s2`.`id` = `po`.`shipTo_id`)))
+    WHERE
+        ((`po`.`otherProduct_id` IN (11 , 12, 20, 22, 23))
+            AND (`s`.`schoolType` = 6))	
